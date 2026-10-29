@@ -1,0 +1,166 @@
+# Configuración central del proyecto guavio-xai
+# Todas las rutas son relativas a la raíz del repositorio.
+
+project:
+  name: "Analítica predictiva e IA explicable - Central Guavio"
+  plant: "GUAVIO"
+  disclaimer: "Prototipo de apoyo analítico. No es una recomendación de oferta ni de operación."
+
+# Fuente de datos: "xm" (API pública de XM/Sinergox + NOAA) o "synthetic" (simulador).
+# Se puede sobrescribir con la variable de entorno GUAVIO_DATA_SOURCE o con --source.
+data:
+  source: "xm"
+
+paths:
+  raw_data: "data/raw/guavio_{source}_daily.parquet"
+  # {source} se reemplaza por la fuente activa (xm o synthetic): cada fuente tiene sus propios artefactos.
+  processed_dir: "data/processed/{source}"
+  features_aportes: "data/processed/{source}/features_aportes.parquet"
+  features_oferta: "data/processed/{source}/features_oferta.parquet"
+  features_falla: "data/processed/{source}/features_falla.parquet"
+  aportes_oof: "data/processed/{source}/aportes_oof_predictions.parquet"
+  aportes_pred: "data/processed/{source}/aportes_final_predictions.parquet"
+  oferta_pred: "data/processed/{source}/oferta_predictions.parquet"
+  falla_pred: "data/processed/{source}/falla_predictions.parquet"
+  models_dir: "models/{source}"
+  figures_dir: "reports/{source}/figures"
+  metrics_dir: "reports/{source}/metrics"
+
+# Parámetros del generador sintético. Valores de orden de magnitud plausibles,
+# NO son datos oficiales de XM ni de la central.
+synthetic:
+  seed: 42
+  start_date: "2016-01-01"
+  end_date: "2026-09-30"
+  installed_capacity_mw: 1260        # 5 unidades Pelton
+  n_units: 5
+  useful_capacity_gwh: 1300          # capacidad útil del embalse en energía (sintética)
+  mean_inflow_gwh_day: 9.0           # aporte medio (sintético)
+  initial_volume_pct: 0.70
+  min_bid_2016_cop_kwh: 60.0         # precio mínimo regulatorio inicial (sintético)
+  min_bid_annual_growth: 0.07
+  maintenance_interval_days: 180
+  maintenance_duration_days: 4
+
+# API pública de XM (https://servapibi.xm.com.co), la que alimenta Sinergox.
+# Verifique métricas y códigos con:  python -m src.data.xm_client --check
+xm:
+  start_date: "2016-01-01"
+  end_date: "auto"                    # "auto" = ayer
+  cache_dir: "data/external/xm_cache"
+  refresh_days: 45                    # tramos más recientes que esto se vuelven a descargar
+  workers: 6
+  timeout_s: 60
+  plant:
+    search_name: "GUAVIO"
+    recurso: "GVIO"                   # código del recurso de generación en XM
+    embalse: "GUAVIO"
+    rio: "GUAVIO"
+    installed_capacity_mw: 1260
+    n_units: 5
+  # Unidades: XM publica energía en kWh, potencia en kW y precios en COP/kWh.
+  # period: daily | hourly. how: agregación horaria a diaria (sum, mean, median).
+  metrics:
+    aportes:          {id: "AporEner",         entity: "Rio",     period: "daily",  keywords: ["aportes", "energ"]}
+    aportes_media:    {id: "AporEnerMediHist", entity: "Rio",     period: "daily",  keywords: ["aportes", "media"]}
+    caudal:           {id: "AporCaudal",       entity: "Rio",     period: "daily",  keywords: ["aportes", "caudal"]}
+    volumen_util:     {id: "VoluUtilDiarEner", entity: "Embalse", period: "daily",  keywords: ["volumen", "til"]}
+    capacidad_util:   {id: "CapaUtilDiarEner", entity: "Embalse", period: "daily",  keywords: ["capacidad", "til"]}
+    vertimientos:     {id: "VertEner",         entity: "Embalse", period: "daily",  keywords: ["vertimiento"]}
+    generacion:       {id: "Gene",             entity: "Recurso", period: "hourly", how: "sum",    keywords: ["generaci", "real"]}
+    disponibilidad:   {id: "DispoReal",        entity: "Recurso", period: "hourly", how: "mean",   keywords: ["disponibilidad", "real"]}
+    precio_oferta:    {id: "PrecOferDesp",     entity: "Recurso", period: "hourly", how: "median", keywords: ["precio", "oferta"]}
+    precio_bolsa:     {id: "PrecBolsNaci",     entity: "Sistema", period: "hourly", how: "mean",   keywords: ["precio", "bolsa"]}
+    demanda:          {id: "DemaCome",         entity: "Sistema", period: "hourly", how: "sum",    keywords: ["demanda", "comercial"]}
+  optional: ["caudal", "vertimientos", "aportes_media", "disponibilidad"]
+  # Proxy del precio mínimo regulatorio: mediana mensual del menor precio ofertado
+  # (positivo) en el SIN cada día. Alternativa: source "csv" con columnas mes (YYYY-MM), precio_cop_kwh.
+  price_floor:
+    source: "proxy"
+    csv_path: "config/precio_minimo.csv"
+    min_valid_cop_kwh: 1.0
+
+# Latencias de publicación (en días) usadas para construir la vista segura.
+latency:
+  hydrology_days: 1                  # aportes, volumen, vertimientos: D-1
+  market_days: 1                     # precio de bolsa, demanda: D-1
+  sensors_days: 0                    # telemetría propia de la planta: D-0 (agregado diario)
+  bids_published: "monthly"          # ofertas diarias publicadas en lote mensual (M+1); "daily" si se publican D-1
+
+features:
+  lags: [1, 2, 3, 4, 5, 6, 7, 14, 30]
+  rolling_windows: [7, 14, 30]
+  nino_lags_months: [1, 2, 3]
+
+aportes_model:
+  horizons: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  quantiles: [0.1, 0.5, 0.9]
+  oof_refit_freq: "YS"              # reentrenamiento walk-forward anual
+  oof_start: "2018-01-01"
+  lgbm_params:
+    n_estimators: 300
+    learning_rate: 0.05
+    num_leaves: 31
+    min_child_samples: 20
+    subsample: 0.9
+    subsample_freq: 1
+    colsample_bytree: 0.9
+    verbose: -1
+
+oferta_model:
+  floor_epsilon: 0.01
+  experiments: ["E1_observada", "E2_observada_mas_pronostico", "E4_cota_superior"]
+  default_experiment: "E2_observada_mas_pronostico"
+  classifier_params:
+    n_estimators: 400
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 3
+  regressor_params:
+    n_estimators: 500
+    max_depth: 5
+    learning_rate: 0.04
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 3
+
+falla_model:
+  horizon_days: 7
+  classifier_params:
+    n_estimators: 400
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 2
+
+splits:
+  train_end: "2022-10-31"
+  val_start: "2022-11-01"
+  val_end: "2024-05-31"
+  test_a_start: "2024-07-01"
+  test_a_end: "2025-03-31"
+  test_b_start: "2025-04-01"
+  test_b_end: "2030-12-31"           # sin límite práctico: incluye los datos más recientes
+  cv_folds: 5
+  gap_days: 30
+
+scenarios:
+  Base: 1.00
+  "El Niño moderado": 0.85
+  "El Niño fuerte": 0.70
+  "Recuperación": 1.15
+
+alerts:
+  deficit_amber_pct: 30
+  deficit_red_pct: 10
+  nino_amber: 0.5
+  nino_red: 1.5
+  low_volume_points: 10
+  spill_risk_pct: 95
+  regime_change_points: 30
+  psi_threshold: 0.25
+  failure_amber: 0.30
+  failure_red: 0.60

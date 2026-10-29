@@ -1,0 +1,31 @@
+variable,shap_medio_abs,familia
+aportes_lag0,1.9993732551695529,Hidrología observada
+precip_sum30,1.3771407765791344,Clima
+doy_cos,0.3665966206490309,Calendario
+aportes_max7,0.24565762819684187,Hidrología observada
+gen_mean7,0.22644004161948497,Operación
+aportes_mean30,0.1799495178593634,Hidrología observada
+aportes_lag1,0.1653999861677757,Hidrología observada
+aportes_mean14,0.14613407131370504,Hidrología observada
+aportes_tend_7_30,0.11124027115301893,Hidrología observada
+aportes_mean7,0.10744379260976358,Hidrología observada
+aportes_lag30,0.10053924013852215,Hidrología observada
+precip_sum3,0.1004469678395915,Clima
+vol_delta7,0.087561189507148,Hidrología observada
+precip_sum7,0.08227407419691068,Clima
+aportes_lag5,0.06292371514907324,Hidrología observada
+aportes_lag14,0.05743445949490586,Hidrología observada
+aportes_lag3,0.05654964535453734,Hidrología observada
+nino34_lag1m,0.05599861750249459,Clima
+nino34_lag3m,0.055890000746559844,Clima
+aportes_lag7,0.05454467120352243,Hidrología observada
+vol_pct,0.05430412927798486,Hidrología observada
+aportes_lag2,0.04584883036147186,Hidrología observada
+doy_sin,0.044894423909843724,Calendario
+aportes_lag4,0.04231564494144184,Hidrología observada
+nino34_lag2m,0.04110379197866586,Clima
+aportes_lag6,0.04035196214206112,Hidrología observada
+aportes_std7,0.034281359216751836,Hidrología observada
+dow,0.02219025110338419,Calendario
+mes,0.017206890870393524,Calendario
+vert_sum7,0.0003488242827098084,Hidrología observada

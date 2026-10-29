@@ -1,0 +1,17 @@
+variable,shap_medio_abs,familia
+horas_desde_mant,2.462386777833876,Condición de máquina
+vib_mean30,1.0492360541963797,Condición de máquina
+vib_por_carga,0.4723277893354749,Condición de máquina
+carga_mean7,0.38191727690194566,Operación
+tcoj_max7,0.3628293552120178,Condición de máquina
+temp_amb_mean7,0.3553399854939278,Clima
+carga_actual,0.34909474800072915,Operación
+tcoj_menos_amb,0.31294452223547237,Condición de máquina
+vib_max7,0.3113149216055331,Condición de máquina
+vib_mean7,0.30460819401204176,Condición de máquina
+tcoj_pend7,0.24396850187937436,Condición de máquina
+tcoj_mean7,0.22441005283864598,Condición de máquina
+disp_unidades,0.19102028653995223,Operación
+vib_pend7,0.17751461561467843,Condición de máquina
+vib_actual,0.13739798200980136,Condición de máquina
+tcoj_actual,0.13243009071972153,Condición de máquina

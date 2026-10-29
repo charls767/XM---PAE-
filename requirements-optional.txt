@@ -1,0 +1,7 @@
+# Dependencias opcionales (no las usa el pipeline base).
+# prophet: baseline exploratorio de series de tiempo; su compilación depende del sistema operativo.
+prophet>=1.1.6
+# pydataxm: cliente oficial de XM; útil para explorar el catálogo (el proyecto trae su propio cliente).
+pydataxm>=0.3.19
+# jupyter: para los notebooks.
+jupyterlab>=4.2

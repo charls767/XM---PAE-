@@ -1,0 +1,35 @@
+variable,shap_medio_abs,familia
+vol_pct,0.8233288263232281,Hidrología observada
+pred_vol_proy_14d,0.42766198399540495,Hidrología pronosticada
+bolsa_lag,0.29153216741436916,Mercado
+doy_sin,0.2588800131783451,Calendario
+bolsa_mean7,0.25313779256491575,Mercado
+aportes_pct_media_mean7,0.25268525090650656,Hidrología observada
+gen_mean7,0.24966359787145376,Operación
+oferta_mes_media,0.23832125508606,Oferta propia publicada
+bolsa_rel_pmin,0.2348373469533016,Mercado
+frac_min_lag,0.22905697453932913,Mercado
+frac_min_mean7,0.183196231171055,Mercado
+pred_anomalia_14d,0.18157278516757214,Hidrología pronosticada
+aportes_lag2,0.15292428270116296,Hidrología observada
+aportes_lag9,0.15282839056706832,Hidrología observada
+oferta_mes_frac_min,0.14710971276524593,Oferta propia publicada
+aportes_lag4,0.14672801427994472,Hidrología observada
+pred_aporte_7d,0.14471924709672848,Hidrología pronosticada
+aportes_lag3,0.12233124452153514,Hidrología observada
+dow,0.11856059733736775,Calendario
+pred_aporte_t,0.10939673692297369,Hidrología pronosticada
+pmin,0.10412628355703941,Mercado
+vol_delta7,0.09943097164465294,Hidrología observada
+aportes_lag7,0.0801558838186033,Hidrología observada
+aportes_mean30,0.07191788646757717,Hidrología observada
+aportes_lag5,0.0628747664764364,Hidrología observada
+pred_aporte_14d,0.06006460006313705,Hidrología pronosticada
+demanda_mean7,0.05998083387233623,Mercado
+doy_cos,0.05874066023955007,Calendario
+aportes_mean7,0.05386981485066265,Hidrología observada
+nino34_lag1m,0.04426904098786197,Clima
+disp_mw,0.03999855052615988,Operación
+oferta_mes_std,0.03485844633940684,Oferta propia publicada
+mes,0.007634264143974814,Calendario
+vert_sum7,0.0006231053318503019,Hidrología observada

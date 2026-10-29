@@ -97,10 +97,11 @@ def build_aportes_features(df: pd.DataFrame, include_climate: bool = True) -> pd
     X["gen_mean7"] = df["generacion_gwh"].rolling(7).mean()
     X = X.join(_calendar(df["fecha"]))
     if include_climate:
-        p = df["precipitacion_mm"]
-        X["precip_sum3"] = p.rolling(3).sum()
-        X["precip_sum7"] = p.rolling(7).sum()
-        X["precip_sum30"] = p.rolling(30).sum()
+        if "precipitacion_mm" in df:  # solo disponible en la fuente sintética (o si se agrega IDEAM)
+            p = df["precipitacion_mm"]
+            X["precip_sum3"] = p.rolling(3).sum()
+            X["precip_sum7"] = p.rolling(7).sum()
+            X["precip_sum30"] = p.rolling(30).sum()
         for m in cfg["features"]["nino_lags_months"]:
             X[f"nino34_lag{m}m"] = df["nino34"].shift(30 * m)
     return X
@@ -123,14 +124,29 @@ def last_published_month_stats(df: pd.DataFrame, eps: float) -> pd.DataFrame:
     d = df[["fecha", "precio_oferta_cop_kwh", "precio_minimo_cop_kwh"]].copy()
     d["y_norm"] = d["precio_oferta_cop_kwh"] / d["precio_minimo_cop_kwh"]
     d["floor"] = (d["precio_oferta_cop_kwh"] <= d["precio_minimo_cop_kwh"] * (1 + eps)).astype(int)
+    d["floor"] = d["floor"].where(d["precio_oferta_cop_kwh"].notna())
     d["period"] = d["fecha"].dt.to_period("M")
-    monthly = d.groupby("period").agg(oferta_mes_media=("y_norm", "mean"),
-                                      oferta_mes_std=("y_norm", "std"),
-                                      oferta_mes_frac_min=("floor", "mean"))
-    cutoff = df["fecha"] - pd.Timedelta(days=1)
-    # Último mes m tal que primer día de m+1 <= cutoff  <=>  m <= periodo(cutoff) - 1
-    avail_period = cutoff.dt.to_period("M") - 1
-    return monthly.reindex(avail_period).set_index(df.index)
+    cols = {"oferta_mes_media": ("y_norm", "mean"), "oferta_mes_std": ("y_norm", "std"),
+            "oferta_mes_frac_min": ("floor", "mean")}
+    if "fraccion_plantas_minimo" in df:
+        d["frac_sin"] = df["fraccion_plantas_minimo"]
+        cols["frac_min_mes_publicado"] = ("frac_sin", "mean")
+    monthly = d.groupby("period").agg(**cols)
+    return _published_monthly(monthly, df["fecha"])
+
+
+def _published_monthly(monthly: pd.DataFrame, dates: pd.Series) -> pd.DataFrame:
+    """Alinea estadísticos mensuales al último mes publicado al corte de t-1.
+
+    El lote del mes m se publica el día 1 del mes m+1: está disponible para el día t si
+    m <= periodo(t-1) - 1. Si ese mes no tiene datos (p. ej. retraso de publicación), se usa
+    el último mes anterior con datos (relleno hacia adelante, nunca hacia atrás).
+    """
+    full = pd.period_range(min(monthly.index.min(), (dates.min() - pd.Timedelta(days=1)).to_period("M") - 1),
+                           (dates.max() - pd.Timedelta(days=1)).to_period("M"), freq="M")
+    monthly = monthly.reindex(full).ffill()
+    avail_period = (dates - pd.Timedelta(days=1)).dt.to_period("M") - 1
+    return monthly.reindex(avail_period).set_index(dates.index)
 
 
 def build_oferta_dataset(df: pd.DataFrame, aportes_pred: pd.DataFrame | None, experiment: str) -> pd.DataFrame:
@@ -161,11 +177,15 @@ def build_oferta_dataset(df: pd.DataFrame, aportes_pred: pd.DataFrame | None, ex
     out["bolsa_mean7"] = df["precio_bolsa_cop_kwh"].rolling(7).mean().shift(L)
     out["bolsa_rel_pmin"] = out["bolsa_mean7"] / df["precio_minimo_cop_kwh"]
     out["demanda_mean7"] = df["demanda_sin_gwh"].rolling(7).mean().shift(L)
-    out["frac_min_lag"] = df["fraccion_plantas_minimo"].shift(L)
-    out["frac_min_mean7"] = df["fraccion_plantas_minimo"].rolling(7).mean().shift(L)
+    if cfg["latency"].get("bids_published", "monthly") == "daily":
+        # Ofertas del SIN disponibles al día siguiente: se usa la fracción de plantas al mínimo de t-2.
+        out["frac_min_lag"] = df["fraccion_plantas_minimo"].shift(L)
+        out["frac_min_mean7"] = df["fraccion_plantas_minimo"].rolling(7).mean().shift(L)
     out["pmin"] = df["precio_minimo_cop_kwh"]
     out["nino34_lag1m"] = df["nino34"].shift(30)
     out = out.join(last_published_month_stats(df, eps))
+    if cfg["latency"].get("bids_published", "monthly") == "daily":
+        out = out.drop(columns=["frac_min_mes_publicado"], errors="ignore")
     out = out.join(_calendar(df["fecha"]))
 
     if experiment in ("E2_observada_mas_pronostico", "E4_cota_superior"):
@@ -189,7 +209,9 @@ def build_oferta_dataset(df: pd.DataFrame, aportes_pred: pd.DataFrame | None, ex
         out["pred_vol_proy_14d"] = 100 * vol_proj.clip(upper=1.0)
 
     out["y_norm"] = df["precio_oferta_cop_kwh"] / df["precio_minimo_cop_kwh"]
-    out["q_floor"] = (df["precio_oferta_cop_kwh"] <= df["precio_minimo_cop_kwh"] * (1 + eps)).astype(int)
+    # Días sin oferta publicada (p. ej. mes en curso): objetivo NaN; se usan solo para predecir.
+    out["q_floor"] = (df["precio_oferta_cop_kwh"] <= df["precio_minimo_cop_kwh"] * (1 + eps)).astype(float)
+    out.loc[df["precio_oferta_cop_kwh"].isna(), "q_floor"] = np.nan
     out["precio_oferta_cop_kwh"] = df["precio_oferta_cop_kwh"]
     return out
 

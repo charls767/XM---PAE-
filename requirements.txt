@@ -1,0 +1,31 @@
+# Probado con Python 3.11-3.13. Versiones mínimas = versiones verificadas en este proyecto.
+# Procesamiento de datos
+numpy>=2.1,<3
+pandas>=2.2,<4
+scipy>=1.14,<2
+pyarrow>=17
+
+# Modelado predictivo y series de tiempo
+scikit-learn>=1.6,<2
+xgboost>=2.1,<4
+lightgbm>=4.5,<5
+statsmodels>=0.14,<1
+
+# IA explicable
+shap>=0.46,<1
+lime>=0.2.0.1
+
+# Dashboard y visualización
+streamlit>=1.50,<2
+plotly>=5.24,<8
+matplotlib>=3.9,<4
+seaborn>=0.13,<1
+
+# Acceso a datos (API de XM / Sinergox y NOAA)
+requests>=2.31
+
+# Entorno, utilidades y pruebas
+pyyaml>=6.0
+joblib>=1.4
+python-dotenv>=1.0
+pytest>=8.3

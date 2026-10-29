@@ -254,7 +254,9 @@ def build_explainers() -> dict[str, dict[str, Any]]:
                               "X": Xo, "dates": ds["fecha"], "unidad": "log(prima sobre el mínimo)",
                               "titulo": "Etapa 2: precio de oferta normalizado"}
 
-    # Falla
+    # Falla (solo si existe: la fuente XM no trae datos de condición de máquina)
+    if not (models_dir() / "falla_model.joblib").exists():
+        return out
     fa = joblib.load(models_dir() / "falla_model.joblib")
     dsf = pd.read_parquet(path_of("features_falla"))
     Xf = dsf[fa["features"]]

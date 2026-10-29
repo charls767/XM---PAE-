@@ -7,6 +7,7 @@ No envía ofertas ni recomienda un precio a ofertar.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -33,6 +34,7 @@ from src.explainability.explainer import (
     local_contributions,
     local_grouped,
 )
+from src.config import data_source, set_data_source
 from src.models import evaluate as ev
 
 st.set_page_config(page_title="Alerta temprana · Guavio", page_icon="💧", layout="wide")
@@ -63,22 +65,32 @@ STATUS_TXT = {"verde": "normal", "ambar": "atención", "rojo": "crítico", "gris
 # Carga en caché
 # ---------------------------------------------------------------------------
 @st.cache_resource(show_spinner="Cargando datos y modelos...")
-def get_bundle():
+def get_bundle(source: str):
+    set_data_source(source)
     return load_bundle()
 
 
 @st.cache_resource(show_spinner="Preparando explicadores SHAP...")
-def get_explainers():
+def _explainers(source: str):
+    set_data_source(source)
     return build_explainers()
 
 
+def get_explainers():
+    return _explainers(SOURCE)
+
+
 @st.cache_resource(show_spinner="Calculando valores SHAP de la ventana...")
-def window_explanation(model: str, end: str, days: int):
-    item = get_explainers()[model]
+def _window_explanation(source: str, model: str, end: str, days: int):
+    item = _explainers(source)[model]
     dates = item["dates"].reset_index(drop=True)
     X = item["X"].reset_index(drop=True)
     m = (dates <= pd.Timestamp(end)) & (dates > pd.Timestamp(end) - pd.Timedelta(days=days))
     return item["explainer"].explain(X[m.values]), dates[m.values]
+
+
+def window_explanation(model: str, end: str, days: int):
+    return _window_explanation(SOURCE, model, end, days)
 
 
 def local_explanation(model: str, day: pd.Timestamp, X_override: pd.DataFrame | None = None):
@@ -91,13 +103,37 @@ def local_explanation(model: str, day: pd.Timestamp, X_override: pd.DataFrame | 
     return item["explainer"].explain(item["X"][m])
 
 
-if not artifacts_ready():
-    st.error("No se encontraron los modelos entrenados. Ejecute primero:\n\n"
-             "`python scripts/run_pipeline.py`")
-    st.stop()
+def _ready(source: str) -> bool:
+    set_data_source(source)
+    return artifacts_ready()
 
-B = get_bundle()
+
+# Fuente de datos: la de la configuración por defecto; se puede cambiar si hay modelos de ambas.
+# Se fija una sola vez por proceso: set_data_source() modifica el entorno en cada recarga.
+DEFAULT_SOURCE = os.environ.setdefault("GUAVIO_DEFAULT_SOURCE", data_source())
+available = [s_ for s_ in ("xm", "synthetic", "xm_mock") if _ready(s_)]
+if not available:
+    st.error("No se encontraron modelos entrenados. Ejecute primero:\n\n"
+             "`python scripts/run_pipeline.py --source xm --force`  (datos de la API de XM)\n\n"
+             "o `python scripts/run_pipeline.py --source synthetic --force`  (simulador, sin internet)")
+    st.stop()
+SOURCE_LABELS = {"xm": "API XM (Sinergox)", "synthetic": "Simulador (sintético)",
+                 "xm_mock": "Simulador de la API XM (pruebas)"}
+with st.sidebar:
+    SOURCE = st.radio("Fuente de datos", available,
+                      index=available.index(DEFAULT_SOURCE) if DEFAULT_SOURCE in available else 0,
+                      format_func=SOURCE_LABELS.get, horizontal=True, key="source_widget",
+                      help="Solo aparecen las fuentes con modelos entrenados.")
+if DEFAULT_SOURCE not in available:
+    st.info(f"No hay modelos entrenados para la fuente '{DEFAULT_SOURCE}'. Se muestra '{SOURCE}'. "
+            f"Para entrenarla: `python scripts/run_pipeline.py --source {DEFAULT_SOURCE} --force`.")
+set_data_source(SOURCE)
+
+B = get_bundle(SOURCE)
 cfg = B["cfg"]
+IS_XM = B["source"].startswith("xm")
+HAS_MACHINE = B["has_machine"]
+SEAL = {"xm": "DATOS XM · SINERGOX", "synthetic": "DATOS SINTÉTICOS", "xm_mock": "SIMULADOR API XM"}[SOURCE]
 raw = B["raw"]
 ofp_all = B["oferta_pred"]
 
@@ -108,8 +144,10 @@ min_day = B["oferta_ds"].fecha.min().date()
 max_day = min(B["oferta_ds"].fecha.max(), B["aportes_pred"].fecha.max()).date()
 if "pending_day" in st.session_state:
     st.session_state["date_widget"] = st.session_state.pop("pending_day")
-if "date_widget" not in st.session_state:
+if ("date_widget" not in st.session_state or st.session_state.get("_source") != SOURCE
+        or not min_day <= st.session_state["date_widget"] <= max_day):
     st.session_state["date_widget"] = max_day
+st.session_state["_source"] = SOURCE
 
 with st.sidebar:
     st.markdown("### Filtros")
@@ -127,8 +165,12 @@ with st.sidebar:
     speed = st.slider("Segundos por día", 1, 10, 3, disabled=not play)
     st.markdown("---")
     st.caption(cfg["project"]["disclaimer"])
-    st.caption("Datos SINTÉTICOS generados por `src/data/loader.py`. Sustituir por XM/SIMEM, IDEAM y NOAA "
-               "para uso real.")
+    if IS_XM:
+        st.caption(f"Datos: API pública de XM (Sinergox) y NOAA (Niño 3.4), hasta el {raw.fecha.max():%d-%b-%Y}. "
+                   "El precio mínimo de oferta es un proxy calculado con las ofertas del SIN.")
+    else:
+        st.caption("Datos SINTÉTICOS generados por `src/data/loader.py`. Para datos reales: "
+                   "`python scripts/run_pipeline.py --source xm --force`.")
 
 origin = day - pd.Timedelta(days=2)       # último día con hidrología publicada al corte de t-1
 start = day - pd.Timedelta(days=window)
@@ -141,8 +183,10 @@ path = forecast_path(B, origin, factor)
 offer = offer_estimate(B, day, factor)
 offer_prev = offer_estimate(B, day - pd.Timedelta(days=1), factor)
 fp = B["falla_pred"]
-p_falla_row = fp[fp.fecha == day - pd.Timedelta(days=1)]
-p_falla = float(p_falla_row.p_falla.iloc[0]) if len(p_falla_row) else None
+p_falla = None
+if HAS_MACHINE:
+    p_falla_row = fp[fp.fecha == day - pd.Timedelta(days=1)]
+    p_falla = float(p_falla_row.p_falla.iloc[0]) if len(p_falla_row) else None
 drift = drift_table(B, day)
 alerts = build_alerts(B, day, path, offer, offer_prev, p_falla, drift)
 main_alert = top_alert(alerts)
@@ -153,7 +197,8 @@ main_alert = top_alert(alerts)
 h1, h2 = st.columns([3, 2])
 with h1:
     st.markdown(f"## Alerta temprana · Central Guavio <span class='seal'>PROTOTIPO</span>"
-                f"<span class='seal'>DATOS SINTÉTICOS</span>", unsafe_allow_html=True)
+                f"<span class='seal'>{SEAL}</span>",
+                unsafe_allow_html=True)
     st.caption(f"Oferta del {day:%d-%b-%Y} · información al corte de las 18:00 del {day - pd.Timedelta(days=1):%d-%b} · "
                f"hidrología hasta el {origin:%d-%b-%Y} · escenario: **{scenario}**")
 with h2:
@@ -189,7 +234,7 @@ st_off = "ambar" if offer and offer["tercil"] == "Alto" else "verde"
 st_fal = "gris" if p_falla is None else ("rojo" if p_falla >= cfg["alerts"]["failure_red"] else
                                           "ambar" if p_falla >= cfg["alerts"]["failure_amber"] else "verde")
 
-cols = st.columns([5, 1, 5, 1, 5, 1, 5, 1, 5, 1, 5])
+cols = st.columns([5, 1, 5, 1, 5, 1, 5, 1, 5, 1, 5] if HAS_MACHINE else [5, 1, 5, 1, 5, 1, 5, 1, 5])
 kpi_card(cols[0], "Clima", f"{nino:+.1f}", "°C Niño 3.4",
          "El Niño" if nino >= 0.5 else "La Niña" if nino <= -0.5 else "Neutral", st_nino,
          spark_win["nino34"], ch.YELLOW)
@@ -202,15 +247,18 @@ kpi_card(cols[6], "Generación", f"{gen7 * 1000 / 24:.0f}", "MW medios", "media 
 if offer:
     kpi_card(cols[8], "Oferta estimada", f"{offer['precio_cop']:.0f}", "COP/kWh",
              f"P(mínimo) {100 * offer['p_floor']:.0f} % · tercil {offer['tercil'].lower()}", st_off, None, ch.ORANGE)
-kpi_card(cols[10], "Máquina", f"{100 * p_falla:.0f}" if p_falla is not None else "–", "% riesgo 7 d",
-         f"vib. {rawi.loc[day - pd.Timedelta(days=1), 'vibracion_mm_s']:.1f} mm/s", st_fal,
-         spark_win["vibracion_mm_s"], ch.RED)
-for i in (1, 3, 5, 7, 9):
+if HAS_MACHINE:
+    kpi_card(cols[10], "Máquina", f"{100 * p_falla:.0f}" if p_falla is not None else "–", "% riesgo 7 d",
+             f"vib. {rawi.loc[day - pd.Timedelta(days=1), 'vibracion_mm_s']:.1f} mm/s", st_fal,
+             spark_win["vibracion_mm_s"], ch.RED)
+for i in ((1, 3, 5, 7, 9) if HAS_MACHINE else (1, 3, 5, 7)):
     cols[i].markdown("<div class='arrow'>→</div>", unsafe_allow_html=True)
 
-tabs = st.tabs(["Panorama", "Aportes: histórico", "Aportes: pronóstico", "Embalse y generación",
-                "Comportamiento de oferta", "Observado vs. predicho", "Explicabilidad y desempeño",
-                "Mantenimiento predictivo"])
+tab_names = ["Panorama", "Aportes: histórico", "Aportes: pronóstico", "Embalse y generación",
+             "Comportamiento de oferta", "Observado vs. predicho", "Explicabilidad y desempeño"]
+if HAS_MACHINE:
+    tab_names.append("Mantenimiento predictivo")
+tabs = st.tabs(tab_names)
 
 # ---------------------------------------------------------------------------
 # 1. Panorama
@@ -249,7 +297,10 @@ with tabs[0]:
                       help=f"Umbral τ = {offer['tau']:.2f}, elegido en validación para maximizar F1.")
             st.metric("Precio estimado (si no oferta al mínimo)", f"{offer['precio_reg_cop']:.0f} COP/kWh",
                       f"{offer['y_reg']:.2f} × precio mínimo ({offer['pmin']:.0f})", delta_color="off")
-            st.caption("La oferta observada de este día se publica en el lote mensual (M+1).")
+            if np.isnan(offer["observado_cop"]):
+                st.caption("La oferta observada de este día aún no está publicada (lote mensual, M+1).")
+            else:
+                st.caption(f"Oferta observada (publicada después): {offer['observado_cop']:.0f} COP/kWh.")
         st.markdown("#### Alertas activas")
         if not alerts:
             st.caption("Ninguna.")
@@ -296,7 +347,7 @@ with tabs[2]:
     c1.plotly_chart(ch.aportes_fan(hist, path, scenario), key="fan2")
     split_sel = c2.radio("Periodo de evaluación", ["test_a", "test_b"], horizontal=True,
                          format_func=lambda s: {"test_a": "Prueba A (jul-24 a mar-25)",
-                                                "test_b": "Prueba B (abr-25 a sep-26)"}[s])
+                                                "test_b": "Prueba B (abr-25 en adelante)"}[s])
     c2.plotly_chart(ch.horizon_error(B["aportes_metrics_h"], split_sel))
     with st.expander("Comparar escenarios"):
         comp = pd.DataFrame({name: forecast_path(B, origin, f)["p50"].values
@@ -313,7 +364,10 @@ with tabs[3]:
     k = st.columns(5)
     k[0].metric("Volumen útil", f"{rawi.loc[origin, 'volumen_util_gwh']:,.0f} GWh", f"{vol:.0f} %", delta_color="off")
     k[1].metric("Volumen proyectado 14 d", f"{proj:.0f} %" if proj is not None else "–")
-    k[2].metric("Nivel del embalse", f"{rawi.loc[origin, 'nivel_embalse_msnm']:,.1f} msnm")
+    if "nivel_embalse_msnm" in rawi:
+        k[2].metric("Nivel del embalse", f"{rawi.loc[origin, 'nivel_embalse_msnm']:,.1f} msnm")
+    else:
+        k[2].metric("Capacidad útil", f"{rawi.loc[origin, 'capacidad_util_gwh']:,.0f} GWh")
     k[3].metric("Vertimientos 7 días", f"{rawi.loc[:origin, 'vertimientos_gwh'].tail(7).sum():.1f} GWh")
     cap = rawi.loc[origin, "disponibilidad_mw"]
     k[4].metric("Factor de planta 7 d", f"{100 * gen7 / (cfg['synthetic']['installed_capacity_mw'] * 24 / 1000):.0f} %",
@@ -360,9 +414,9 @@ with tabs[5]:
                                               "E4_cota_superior": "E4 · aportes futuros reales (cota)"}[e])
     split = c00.selectbox("Periodo", ["test_a", "test_b", "val"],
                           format_func=lambda s: {"test_a": "Prueba A · jul-24 a mar-25 (estrés)",
-                                                 "test_b": "Prueba B · abr-25 a sep-26 (El Niño 2026)",
+                                                 "test_b": "Prueba B · abr-25 en adelante (El Niño 2026)",
                                                  "val": "Validación · nov-22 a may-24"}[s])
-    sel = ofp_all[(ofp_all.experimento == exp) & (ofp_all.split == split)]
+    sel = ofp_all[(ofp_all.experimento == exp) & (ofp_all.split == split) & ofp_all.y_norm.notna()]
     edges = tuple(B["oferta_metrics"]["experimentos"][exp]["terciles"])
     res = B["oferta_metrics"]["experimentos"][exp][split]
     k = st.columns(5)
@@ -393,6 +447,7 @@ with tabs[5]:
 with tabs[6]:
     names = {"oferta_regresor": "Oferta · etapa 2 (precio)", "oferta_clasificador": "Oferta · etapa 1 (mínimo)",
              "aportes": "Aportes · P50 día t", "falla": "Riesgo de falla a 7 días"}
+    names = {k_: v_ for k_, v_ in names.items() if k_ in get_explainers()}
     c0, c00 = st.columns([2, 1])
     model = c0.selectbox("Modelo a explicar", list(names), format_func=names.get)
     shap_days = c00.select_slider("Ventana SHAP", [90, 180, 365], value=180, format_func=lambda d: f"{d} días")
@@ -465,29 +520,30 @@ with tabs[6]:
 # ---------------------------------------------------------------------------
 # 8. Mantenimiento predictivo
 # ---------------------------------------------------------------------------
-with tabs[7]:
-    dd = day - pd.Timedelta(days=1)
-    k = st.columns(5)
-    k[0].metric("Riesgo de falla 7 días", f"{100 * p_falla:.0f} %" if p_falla is not None else "–",
-                f"umbral {100 * B['falla_art']['tau']:.0f} %", delta_color="off")
-    k[1].metric("Vibración (media 7 d)", f"{rawi.loc[:dd, 'vibracion_mm_s'].tail(7).mean():.2f} mm/s")
-    k[2].metric("Temp. cojinete (media 7 d)", f"{rawi.loc[:dd, 'temp_cojinete_c'].tail(7).mean():.1f} °C")
-    k[3].metric("Horas desde mantenimiento", f"{rawi.loc[dd, 'horas_desde_mant']:,.0f} h")
-    k[4].metric("Unidades disponibles", f"{int(rawi.loc[dd, 'unidades_disponibles'])} de {cfg['synthetic']['n_units']}")
-    fr = fp[(fp.fecha <= dd) & (fp.fecha > dd - pd.Timedelta(days=window))]
-    st.plotly_chart(ch.failure_prob_chart(fr, raw, cfg["alerts"]["failure_amber"], cfg["alerts"]["failure_red"]))
-    c1, c2 = st.columns(2)
-    c1.plotly_chart(ch.sensor_chart(raw, start, dd, "vibracion_mm_s", "Vibración de turbinas (RMS)", "mm/s", ch.BLUE))
-    c2.plotly_chart(ch.sensor_chart(raw, start, dd, "temp_cojinete_c", "Temperatura de cojinetes", "°C", ch.ORANGE))
-    st.caption("Líneas punteadas: rojo = falla forzada, verde = inicio de mantenimiento programado.")
-    loc = local_explanation("falla", dd)
-    if loc is not None:
-        contrib = local_contributions(loc, 0, top=8)
-        st.plotly_chart(ch.shap_waterfall(contrib, float(loc.base_values[0]), "log-odds",
-                                          f"¿Por qué este riesgo? Cascada SHAP del {dd:%d-%b-%Y}"))
+if HAS_MACHINE:
+    with tabs[7]:
+        dd = day - pd.Timedelta(days=1)
+        k = st.columns(5)
+        k[0].metric("Riesgo de falla 7 días", f"{100 * p_falla:.0f} %" if p_falla is not None else "–",
+                    f"umbral {100 * B['falla_art']['tau']:.0f} %", delta_color="off")
+        k[1].metric("Vibración (media 7 d)", f"{rawi.loc[:dd, 'vibracion_mm_s'].tail(7).mean():.2f} mm/s")
+        k[2].metric("Temp. cojinete (media 7 d)", f"{rawi.loc[:dd, 'temp_cojinete_c'].tail(7).mean():.1f} °C")
+        k[3].metric("Horas desde mantenimiento", f"{rawi.loc[dd, 'horas_desde_mant']:,.0f} h")
+        k[4].metric("Unidades disponibles", f"{int(rawi.loc[dd, 'unidades_disponibles'])} de {cfg['synthetic']['n_units']}")
+        fr = fp[(fp.fecha <= dd) & (fp.fecha > dd - pd.Timedelta(days=window))]
+        st.plotly_chart(ch.failure_prob_chart(fr, raw, cfg["alerts"]["failure_amber"], cfg["alerts"]["failure_red"]))
+        c1, c2 = st.columns(2)
+        c1.plotly_chart(ch.sensor_chart(raw, start, dd, "vibracion_mm_s", "Vibración de turbinas (RMS)", "mm/s", ch.BLUE))
+        c2.plotly_chart(ch.sensor_chart(raw, start, dd, "temp_cojinete_c", "Temperatura de cojinetes", "°C", ch.ORANGE))
+        st.caption("Líneas punteadas: rojo = falla forzada, verde = inicio de mantenimiento programado.")
+        loc = local_explanation("falla", dd)
+        if loc is not None:
+            contrib = local_contributions(loc, 0, top=8)
+            st.plotly_chart(ch.shap_waterfall(contrib, float(loc.base_values[0]), "log-odds",
+                                              f"¿Por qué este riesgo? Cascada SHAP del {dd:%d-%b-%Y}"))
 
 st.markdown("---")
-st.caption(f"Fuentes simuladas: XM (SIMEM/Sinergox) · IDEAM · NOAA | Motor ML: LightGBM, XGBoost, scikit-learn · "
+st.caption(f"{'Fuentes: API XM (Sinergox) · NOAA CPC' if IS_XM else 'Fuentes simuladas: XM · IDEAM · NOAA'} | Motor ML: LightGBM, XGBoost, scikit-learn · "
            f"SHAP | Datos hasta {raw.fecha.max():%d-%b-%Y} | {cfg['project']['disclaimer']}")
 
 # Reproducción día a día (simulación de llegada de datos)

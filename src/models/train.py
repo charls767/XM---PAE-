@@ -39,7 +39,7 @@ from src.data.features import (
     climatology,
     oferta_feature_columns,
 )
-from src.data.loader import load_data
+from src.data.loader import has_machine_data, load_data
 from src.models import evaluate as ev
 from src.models.transforms import inv_log_premium, log_premium
 from src.utils.logging_utils import get_logger
@@ -60,6 +60,12 @@ def split_masks(dates: pd.Series) -> dict[str, pd.Series]:
         "test_a": (dates >= s["test_a_start"]) & (dates <= s["test_a_end"]),
         "test_b": (dates >= s["test_b_start"]) & (dates <= s["test_b_end"]),
     }
+
+
+def labeled_masks(ds: pd.DataFrame) -> dict[str, pd.Series]:
+    """Particiones temporales restringidas a filas con oferta observada (objetivo conocido)."""
+    has_y = ds["y_norm"].notna()
+    return {k: v & has_y for k, v in split_masks(ds["fecha"]).items()}
 
 
 def split_label(dates: pd.Series) -> pd.Series:
@@ -192,7 +198,7 @@ def train_aportes(df: pd.DataFrame) -> dict[str, Any]:
         for q in quantiles:
             final_pred[f"p{int(q * 100)}_h{h}"] = preds[q]
     final_pred["split"] = split_label(dates)
-    final_pred.to_parquet(ROOT / "data/processed/aportes_final_predictions.parquet", index=False)
+    final_pred.to_parquet(path_of("aportes_pred"), index=False)
     X.assign(fecha=dates).to_parquet(path_of("features_aportes"), index=False)
 
     artifact = {"feature_set": feature_set, "features": features, "horizons": horizons,
@@ -310,9 +316,11 @@ def train_oferta(df: pd.DataFrame) -> dict[str, Any]:
     for exp in ocfg["experiments"]:
         ds = build_oferta_dataset(df, oof, exp)
         feats = oferta_feature_columns(ds)
-        ok = (ds["fecha"] >= start) & ds[feats].notna().all(axis=1) & ds["y_norm"].notna()
+        # Filas con variables completas. Las que no tienen oferta publicada se conservan para predecir,
+        # pero no entran al entrenamiento ni a la evaluación.
+        ok = (ds["fecha"] >= start) & ds[feats].notna().all(axis=1)
         ds = ds[ok].copy()
-        masks = split_masks(ds["fecha"])
+        masks = labeled_masks(ds)
         edges = ev.tercile_edges(ds.loc[masks["train"], "y_norm"])
         art = _fit_two_stage(ds, feats, masks, edges)
         pred = predict_two_stage(art, ds)
@@ -334,11 +342,11 @@ def train_oferta(df: pd.DataFrame) -> dict[str, Any]:
             ds.to_parquet(path_of("features_oferta"), index=False)
 
     preds = pd.concat(all_preds, ignore_index=True)
-    preds.to_parquet(ROOT / "data/processed/oferta_predictions.parquet", index=False)
+    preds.to_parquet(path_of("oferta_pred"), index=False)
 
     # Baselines (con las mismas filas del experimento por defecto).
     base_ds = pd.read_parquet(path_of("features_oferta"))
-    masks = split_masks(base_ds["fecha"])
+    masks = labeled_masks(base_ds)
     feats = artifacts[ocfg["default_experiment"]]["features"]
     tr, va = masks["train"], masks["val"]
     rate_by_month = base_ds[tr].groupby("mes")["q_floor"].mean()
@@ -404,7 +412,7 @@ def train_falla(df: pd.DataFrame) -> dict[str, Any]:
     out = ds[["fecha", "y_falla"]].copy()
     out["p_falla"], out["p_falla_raw"] = p, raw
     out["split"] = split_label(ds["fecha"])
-    out.to_parquet(ROOT / "data/processed/falla_predictions.parquet", index=False)
+    out.to_parquet(path_of("falla_pred"), index=False)
     ds.to_parquet(path_of("features_falla"), index=False)
     log.info("Falla: F1 test_a=%.3f | PR-AUC test_a=%.3f | prevalencia=%.3f",
              res["test_a"]["F1"], res["test_a"]["PR_AUC"], res["test_a"]["prevalencia"])
@@ -415,14 +423,18 @@ def train_falla(df: pd.DataFrame) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Entrena los modelos del prototipo Guavio.")
     parser.add_argument("--component", choices=["all", "aportes", "oferta", "falla"], default="all")
+    parser.add_argument("--source", choices=["xm", "synthetic"], help="Fuente de datos (por defecto, la de config).")
     args = parser.parse_args()
-    df = load_data()
+    df = load_data(source=args.source)
     if args.component in ("all", "aportes"):
         train_aportes(df)
     if args.component in ("all", "oferta"):
         train_oferta(df)
     if args.component in ("all", "falla"):
-        train_falla(df)
+        if has_machine_data(df):
+            train_falla(df)
+        else:
+            log.info("Modelo de fallas omitido: la fuente de datos no trae vibración ni temperatura de cojinetes.")
     log.info("Entrenamiento terminado.")
 
 
