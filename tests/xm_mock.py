@@ -17,6 +17,10 @@ from src.data.loader import generate_synthetic_data
 
 HOURS = [f"Hour{h:02d}" for h in range(1, 25)]
 OTHER_RESOURCES = ["CHVR", "SCAR", "SOGA", "BETA", "URRA", "PRDO", "MIEL", "TSJR"]
+# Otros ríos/embalses que XM devuelve cuando se consulta sin filtro (con su factor de escala).
+OTHER_SERIES = {"BATATAS": 0.6, "CHUZA": 0.3, "PENOL": 1.4}
+# Como en la API real, los listados usan códigos distintos a los de las series.
+LIST_CODES = {"ListadoRios": ("GUAVGUAV", "GUAVIO"), "ListadoEmbalses": ("EGUAVIO1", "GUAVIO")}
 
 
 def _catalog() -> list[dict]:
@@ -59,6 +63,9 @@ class XMMock:
             ("CapaUtilDiarEner", "GUAVIO"): d["capacidad_util_gwh"] * 1e6,
             ("VertEner", "GUAVIO"): d["vertimientos_gwh"] * 1e6,
         }
+        if code in OTHER_SERIES:
+            base = table.get((metric, "GUAVIO"))
+            return None if base is None else base * OTHER_SERIES[code]
         return table.get((metric, code))
 
     def _hourly_values(self, metric: str, code: str) -> pd.Series | None:
@@ -98,7 +105,7 @@ class XMMock:
         elif filters:
             codes = filters
         else:
-            codes = ["GVIO"] + OTHER_RESOURCES if entity == "Recurso" else ["GUAVIO"]
+            codes = ["GVIO"] + OTHER_RESOURCES if entity == "Recurso" else ["GUAVIO"] + list(OTHER_SERIES)
         days = pd.date_range(start, end, freq="D")
         items = []
         key = "HourlyEntities" if period == "hourly" else "DailyEntities"
@@ -125,10 +132,10 @@ class XMMock:
         elif metric == "ListadoRecursos":
             ents = [{"Id": "r", "Values": {"Code": "GVIO", "Name": "GUAVIO", "Type": "HIDRAULICA"}}] + \
                    [{"Id": "r", "Values": {"Code": c, "Name": c, "Type": "HIDRAULICA"}} for c in OTHER_RESOURCES]
-        elif metric == "ListadoEmbalses":
-            ents = [{"Id": "e", "Values": {"Code": "GUAVIO", "Name": "GUAVIO"}}]
-        elif metric == "ListadoRios":
-            ents = [{"Id": "rio", "Values": {"Code": "GUAVIO", "Name": "GUAVIO"}}]
+        elif metric in LIST_CODES:
+            code, name = LIST_CODES[metric]
+            ents = [{"Id": "l", "Values": {"Code": code, "Name": name}}] + \
+                   [{"Id": "l", "Values": {"Code": c[:4] + c[:4], "Name": c}} for c in OTHER_SERIES]
         else:
             ents = []
         return {"Items": [{"Date": "2026-10-01", "ListEntities": ents}]}

@@ -161,7 +161,7 @@ class XMClient:
         body = {"MetricId": metric, "StartDate": f"{a:%Y-%m-%d}", "EndDate": f"{b:%Y-%m-%d}",
                 "Entity": entity, "Filter": filters}
         df = self.parse(self._post(period, body), period)
-        if self.use_cache:
+        if self.use_cache and not df.empty:  # un tramo vacío no se guarda: se vuelve a pedir en la próxima corrida
             df.to_parquet(path, index=False)
         return df
 
@@ -250,31 +250,72 @@ def check_metrics(client: XMClient) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def resolve_plant_codes(client: XMClient) -> dict[str, str]:
-    """Busca los códigos de Guavio en los listados de recursos, embalses y ríos de XM."""
-    plant = load_config()["xm"]["plant"]
-    out = {"recurso": plant["recurso"], "embalse": plant["embalse"], "rio": plant["rio"]}
+def _list_candidates(client: XMClient, metric: str, needle: str) -> list[str]:
+    """Códigos y nombres de un listado de XM que contienen `needle` (p. ej. GUAVIO)."""
+    try:
+        df = client.list_entities(metric)
+    except XMAPIError as exc:
+        log.warning("No se pudo leer %s: %s", metric, exc)
+        return []
+    out: list[str] = []
+    if df.empty:
+        return out
+    code_col, name_col = _find_col(df, "Code", "code"), _find_col(df, "Name", "name")
+    for _, row in df.iterrows():
+        vals = [str(row[c]).upper() for c in (code_col, name_col) if c is not None and pd.notna(row[c])]
+        if any(needle in v for v in vals):
+            out.extend(vals)
+    return list(dict.fromkeys(out))
+
+
+def probe_code(client: XMClient, metric: str, entity: str, candidates: list[str], needle: str,
+               end: pd.Timestamp, days: int = 40) -> tuple[str | None, list[str]]:
+    """Pide una muestra reciente SIN filtro y devuelve el código con el que la planta aparece en los datos.
+
+    XM no siempre usa el mismo código en sus listados y en sus series (p. ej. el listado de ríos
+    dice GUAVGUAV y la serie de aportes usa otro), así que se decide con los datos mismos.
+    """
+    codes: list[str] = []
+    for shift in (0, 365):  # si la ventana reciente viene vacía, se prueba un año antes
+        e = end - pd.Timedelta(days=shift)
+        df = client.fetch(metric, entity, e - pd.Timedelta(days=days), e, filters=[], period="daily")
+        codes = sorted(df["codigo"].astype(str).unique()) if not df.empty else []
+        if codes:
+            break
+    for cand in candidates:
+        if cand.upper() in codes:
+            return cand.upper(), codes
+    prefix = needle[:4]
+    hits = [c for c in codes if prefix in c]
+    return (hits[0] if hits else None), codes
+
+
+def resolve_plant_codes(client: XMClient, end: pd.Timestamp | None = None) -> dict[str, str]:
+    """Códigos de Guavio tal como aparecen en las series de XM.
+
+    recurso: se valida contra ListadoRecursos (el filtro por recurso funciona con el código, p. ej. GVIO).
+    rio y embalse: se detectan con una muestra sin filtro de AporEner y VoluUtilDiarEner.
+    """
+    xcfg = load_config()["xm"]
+    plant, metrics = xcfg["plant"], xcfg["metrics"]
     needle = plant.get("search_name", "GUAVIO").upper()
-    for key, metric in (("recurso", "ListadoRecursos"), ("embalse", "ListadoEmbalses"), ("rio", "ListadoRios")):
-        try:
-            df = client.list_entities(metric)
-        except XMAPIError as exc:
-            log.warning("No se pudo leer %s: %s", metric, exc)
-            continue
-        if df.empty:
-            continue
-        code_col = _find_col(df, "Code", "code")
-        name_col = _find_col(df, "Name", "name", "Values_Name")
-        if code_col is None:
-            continue
-        codes = df[code_col].astype(str).str.upper()
-        if out[key].upper() in set(codes):
-            continue
-        if name_col is not None:
-            hit = df[df[name_col].astype(str).str.upper().str.contains(needle)]
-            if not hit.empty:
-                log.info("Código de %s para %s resuelto como %s", key, needle, hit.iloc[0][code_col])
-                out[key] = str(hit.iloc[0][code_col])
+    end = end or (pd.Timestamp.today().normalize() - pd.Timedelta(days=2))
+    out = {"recurso": plant["recurso"]}
+    rec = _list_candidates(client, "ListadoRecursos", needle)
+    if rec and plant["recurso"].upper() not in rec:
+        log.warning("El recurso %s no aparece en ListadoRecursos; candidatos: %s", plant["recurso"], rec[:6])
+    for key, list_metric, metric_key in (("rio", "ListadoRios", "aportes"), ("embalse", "ListadoEmbalses", "volumen_util")):
+        cands = [str(plant[key]).upper()] + _list_candidates(client, list_metric, needle) + [needle]
+        cands = [c for c in dict.fromkeys(cands) if c and c != "AUTO"]
+        spec = metrics[metric_key]
+        code, codes = probe_code(client, spec["id"], spec["entity"], cands, needle, end)
+        if code is None:
+            raise RuntimeError(
+                f"No se encontró {needle} en {spec['id']}/{spec['entity']}. Códigos disponibles: {codes[:40]}. "
+                f"Escriba el código correcto en config/config.yaml -> xm.plant.{key}.")
+        if code != str(plant[key]).upper():
+            log.info("Código de %s detectado en los datos de %s: %s (candidatos: %s)", key, spec["id"], code, cands)
+        out[key] = code
     return out
 
 
@@ -291,7 +332,14 @@ def main() -> None:
         print(hits.drop(columns=[c for c in ("Date",) if c in hits]).to_string(index=False))
     if args.check or not args.list:
         print(check_metrics(client).to_string(index=False))
-        print("Códigos de la planta:", resolve_plant_codes(client))
+        codes = resolve_plant_codes(client)
+        print("Códigos de la planta (como aparecen en las series de XM):", codes)
+        end = pd.Timestamp.today().normalize() - pd.Timedelta(days=2)
+        spec = load_config()["xm"]["metrics"]["aportes"]
+        s = client.fetch_daily_series(spec["id"], spec["entity"], end - pd.Timedelta(days=10), end,
+                                      filters=[], code=codes["rio"])
+        print(f"Prueba: últimos aportes de {codes['rio']} (GWh/día):")
+        print((s.tail(5) * 1e-6).round(2).to_string())
 
 
 if __name__ == "__main__":

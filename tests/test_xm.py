@@ -62,7 +62,31 @@ def test_fetch_units_and_cache(client, mock, df):
 def test_catalog_and_codes(client):
     chk = check_metrics(client)
     assert chk["existe"].all()
-    assert resolve_plant_codes(client) == {"recurso": "GVIO", "embalse": "GUAVIO", "rio": "GUAVIO"}
+    end = pd.Timestamp("2026-09-28")
+    assert resolve_plant_codes(client, end=end) == {"recurso": "GVIO", "embalse": "GUAVIO", "rio": "GUAVIO"}
+
+
+def test_list_code_differs_from_series_code(client, monkeypatch):
+    """Caso real: ListadoRios dice GUAVGUAV, pero la serie AporEner no responde a ese filtro."""
+    from src.config import load_config
+
+    filtered = client.fetch("AporEner", "Rio", "2026-09-01", "2026-09-28", filters=["GUAVGUAV"])
+    assert filtered.empty
+    plant = load_config()["xm"]["plant"]
+    monkeypatch.setitem(plant, "rio", "GUAVGUAV")
+    monkeypatch.setitem(plant, "embalse", "auto")
+    codes = resolve_plant_codes(client, end=pd.Timestamp("2026-09-28"))
+    assert codes["rio"] == "GUAVIO" and codes["embalse"] == "GUAVIO"
+
+
+def test_unknown_plant_raises(client, monkeypatch):
+    from src.config import load_config
+
+    plant = load_config()["xm"]["plant"]
+    monkeypatch.setitem(plant, "search_name", "INEXISTENTE")
+    monkeypatch.setitem(plant, "rio", "NADA")
+    with pytest.raises(RuntimeError, match="Códigos disponibles"):
+        resolve_plant_codes(client, end=pd.Timestamp("2026-09-28"))
 
 
 def test_noaa_parsers(df, patched_noaa):

@@ -35,7 +35,9 @@ def _date_range() -> tuple[pd.Timestamp, pd.Timestamp]:
 
 def _series(client: XMClient, key: str, start, end, code: str | None) -> pd.Series:
     spec = load_config()["xm"]["metrics"][key]
-    filters = [code] if code and spec["entity"] != "Sistema" else []
+    # Recurso: filtro del lado del servidor (código del recurso). Río y embalse: se piden sin filtro y se
+    # selecciona el código detectado en los datos, porque XM no usa el mismo código en listados y series.
+    filters = [code] if code and spec["entity"] == "Recurso" else []
     s = client.fetch_daily_series(spec["id"], spec["entity"], start, end, filters=filters,
                                   period=spec.get("period", "daily"), how=spec.get("how", "sum"),
                                   code=code if spec["entity"] != "Sistema" else None)
@@ -95,7 +97,7 @@ def build_xm_dataset(client: XMClient | None = None, start=None, end=None) -> pd
     client = client or XMClient()
     s0, e0 = _date_range()
     start, end = pd.Timestamp(start or s0), pd.Timestamp(end or e0)
-    codes = resolve_plant_codes(client)
+    codes = resolve_plant_codes(client, end=end)
     log.info("Construyendo dataset XM %s a %s para %s", start.date(), end.date(), codes)
     idx = pd.date_range(start, end, freq="D", name="fecha")
 
